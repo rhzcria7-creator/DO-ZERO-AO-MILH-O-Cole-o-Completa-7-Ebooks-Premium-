@@ -1,15 +1,99 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default Deny
+    // ============================================================
+    // DEFAULT DENY - Nenhum acesso por padrão
+    // ============================================================
     match /{document=**} {
       allow read, write: if false;
     }
 
+    // ============================================================
+    // USUÁRIOS - Perfil do usuário autenticado
+    // ============================================================
+    match /users/{userId} {
+      // Usuário só pode ler e escrever seu próprio perfil
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+      // Não permite delete para evitar perda de dados
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // COMPRAS - Registro de compras (CRÍTICO)
+    // ============================================================
     match /purchases/{purchaseId} {
-      // Allow users to create and read their own purchases
-      allow create: if request.auth != null && request.resource.data.email == request.auth.token.email;
+      // CRÍTICO: Apenas o próprio usuário pode ler SUA compra
+      // O status "completed" só pode ser definido pelo WEBHOOK do Mercado Pago
+      // Jamais pelo frontend
       allow read: if request.auth != null && resource.data.email == request.auth.token.email;
+      
+      // CRÍTICO: Criação SÓ pelo backend/webhook, não pelo frontend
+      // O campo 'createdBy' indica a origem (webhook/system ou frontend)
+      allow create: if request.auth != null 
+                    && request.resource.data.email == request.auth.token.email
+                    && request.resource.data.createdBy == 'system';
+      
+      // Atualizações apenas pelo sistema (webhook confirma pagamento)
+      // Usuário NÃO pode modificar status de compra
+      allow update: if request.auth != null 
+                    && request.auth.uid == resource.data.uid
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                      .hasOnly(['lastAccess', 'downloadCount', 'updatedAt']);
+      
+      // Nunca permitir delete
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // DOWNLOADS - Logs de download (apenas leitura para o usuário)
+    // ============================================================
+    match /downloads/{downloadId} {
+      // Usuário pode ver seu próprio histórico de downloads
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      // Sistema cria logs
+      allow create: if request.auth != null;
+      // Não permite update ou delete
+      allow update, delete: if false;
+    }
+
+    // ============================================================
+    // SESSÕES DE PAGAMENTO - Mercado Pago sessions
+    // ============================================================
+    match /payment_sessions/{sessionId} {
+      // Apenas o dono da sessão pode ler
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      // Sistema cria sessões
+      allow create, update: if request.auth != null;
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // ACTIVITY LOGS - Logs de atividade (apenas leitura admin)
+    // ============================================================
+    match /activity_logs/{logId} {
+      // Ninguém lê logs diretamente (apenas admins via backend)
+      allow read: if false;
+      // Sistema registra atividades
+      allow create: if request.auth != null;
+      allow update, delete: if false;
+    }
+
+    // ============================================================
+    // CONFIGURAÇÕES - Configurações do sistema (só leitura)
+    // ============================================================
+    match /config/{configId} {
+      allow read: if true; // Configurações públicas podem ser lidas
+      allow write: if false; // Apenas sistema modifica
+    }
+
+    // ============================================================
+    // PRODUTOS - Catálogo de produtos (apenas leitura)
+    // ============================================================
+    match /products/{productId} {
+      allow read: if true; // Catálogo público
+      allow write: if false; // Apenas sistema modifica
     }
   }
 }

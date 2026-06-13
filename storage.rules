@@ -1,0 +1,62 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // ============================================================
+    // DEFAULT DENY - Nenhum acesso por padrão
+    // ============================================================
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // ============================================================
+    // EBOOKS - Arquivos protegidos (apenas compradores)
+    // ============================================================
+    match /ebooks/{ebookId} {
+      // Ninguém pode listar arquivos
+      allow list: if false;
+      
+      // Apenas administradores podem fazer upload (via Firebase Admin SDK)
+      allow write: if false; // Admin uploads via SDK, not client
+      
+      // Download apenas para usuários autenticados com compra validada
+      // A validação de compra é feita NO BACKEND, não aqui
+      // Este rule apenas verifica se há um token de autenticação válido
+      allow read: if request.auth != null;
+    }
+
+    // ============================================================
+    // EBOOKS TEMPORÁRIOS - Links de download com expiração
+    // ============================================================
+    match /temp-downloads/{userId}/{filename} {
+      // Apenas o próprio usuário pode acessar
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false; // Apenas servidor cria
+    }
+
+    // ============================================================
+    // ARQUIVOS PÚBLICOS DO SITE
+    // ============================================================
+    match /public/{filename} {
+      // Imagens públicas (caps, logos, etc)
+      allow read: if true;
+      allow write: if false; // Ninguém escreve
+    }
+
+    // ============================================================
+    // QR CODES E IMAGENS DE PAGAMENTO
+    // ============================================================
+    match /payment/{filename} {
+      allow read: if true; // QR codes são públicos para checkout
+      allow write: if false;
+    }
+
+    // ============================================================
+    // AUDIT LOGS - Logs de auditoria (apenas escrita)
+    // ============================================================
+    match /logs/{filename} {
+      allow write: if request.auth != null; // Apenas sistema/logged users
+      allow read: if false;
+    }
+  }
+}
