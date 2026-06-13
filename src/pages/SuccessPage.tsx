@@ -1,8 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { PRODUCT } from "../constants/product";
-import { auth, db, loginWithGoogle, logout } from "../firebase";
+import { auth, loginWithGoogle, logout } from "../firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { collection, addDoc, query, where, getDocs, serverTimestamp } from "firebase/firestore";
 
 interface VerificationResult {
   verified: boolean;
@@ -57,17 +56,30 @@ export default function SuccessPage() {
         return;
       }
 
+      if (!user) {
+        if (mounted) {
+          setStatus("error");
+          setErrorMessage("Faça login para verificar sua compra.");
+        }
+        return;
+      }
+
       if (mounted) {
         setStatus("verifying");
       }
 
       const tryVerify = async (): Promise<VerificationResult> => {
         try {
-          const response = await fetch(`${API_BASE}/api/purchase/${sessionId}`, {
-            method: "GET",
+          // Get Firebase ID token for server-side verification
+          const idToken = await user.getIdToken();
+          
+          const response = await fetch(`${API_BASE}/api/purchase/verify`, {
+            method: "POST",
             headers: {
               "Content-Type": "application/json",
+              "Authorization": `Bearer ${idToken}`
             },
+            body: JSON.stringify({ sessionId })
           });
 
           if (!response.ok) {
@@ -88,29 +100,6 @@ export default function SuccessPage() {
         if (result.verified) {
           if (mounted) {
             setStatus("success");
-            // If it's the demo session and user is logged in, seed their purchase 
-            // to allow testing the download cleanly without manual webhook firing.
-            const urlEmail = params.get("email");
-            const targetEmail = urlEmail || (user && user.email) || null;
-            if (sessionId === "demo" && targetEmail) {
-              const purchasesRef = collection(db, "purchases");
-              const q = query(purchasesRef, where("email", "==", targetEmail), where("status", "==", "completed"));
-              getDocs(q).then(snapshot => {
-                if (snapshot.empty) {
-                  addDoc(purchasesRef, {
-                    email: targetEmail,
-                    status: "completed",
-                    createdAt: serverTimestamp()
-                  }).catch(console.error);
-                }
-              }).catch(console.error);
-
-              fetch(`${API_BASE}/api/webhook/simulate`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email: targetEmail })
-              }).catch(console.error);
-            }
           }
           return;
         }
@@ -189,37 +178,26 @@ export default function SuccessPage() {
     setIsDownloading(true);
 
     try {
-      // Sandbox implementation: Verify purchase on the frontend client SDK 
-      // instead of backend because of sandbox cross-project permissions.
-      const purchasesRef = collection(db, "purchases");
-      const q = query(purchasesRef, where("email", "==", user.email), where("status", "==", "completed"));
-      const snapshot = await getDocs(q);
-      
-      if (snapshot.empty) {
-        setIsDownloading(false);
-        downloadStartedRef.current = false;
-        alert("E-mail não autorizado ou compra não confirmada. Certifique-se de logar com seu e-mail de compra.");
-        return;
-      }
-
-      const token = await user.getIdToken();
-      const response = await fetch(`${API_BASE}/api/download`, {
+      // Request secure download token from backend
+      // Backend validates purchase status server-side
+      const idToken = await user.getIdToken();
+      const response = await fetch(`${API_BASE}/api/download/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
+          "Authorization": `Bearer ${idToken}`
         },
-        body: JSON.stringify({ action: 'download' }),
       });
 
       const data = await response.json();
 
       if (!response.ok || !data.success) {
-        throw new Error(data.error || "Erro ao fazer o download");
+        throw new Error(data.error || "E-book não disponível para download. Verifique se sua compra foi confirmada.");
       }
 
-      if (data.downloadUrl) {
-        window.open(data.downloadUrl, "_blank");
+      if (data.downloadToken) {
+        // Redirect to secure download endpoint with token
+        window.location.href = `${API_BASE}/api/download/${data.downloadToken}`;
       }
     } catch (err: any) {
       console.error(err);

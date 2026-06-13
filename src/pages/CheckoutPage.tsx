@@ -373,17 +373,19 @@ export default function CheckoutPage() {
             <p className="text-xs text-mist max-w-md leading-relaxed">
               Já efetuou o pagamento? O acesso ao PDF é liberado em até{" "}
               <span className="text-white">2 minutos</span> após a confirmação
-              do pagamento.
+              do pagamento via Mercado Pago.
             </p>
-            <a
-              href={`/sucesso?session_id=demo${email ? `&email=${encodeURIComponent(email)}` : ''}`}
-              className="btn-ghost !text-sm whitespace-nowrap"
-            >
-              Já paguei · liberar acesso
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 12h14M13 5l7 7-7 7" />
-              </svg>
-            </a>
+            {user && (
+              <a
+                href={`/sucesso?session_id=${encodeURIComponent(user.uid)}`}
+                className="btn-ghost !text-sm whitespace-nowrap"
+              >
+                Verificar pagamento
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12h14M13 5l7 7-7 7" />
+                </svg>
+              </a>
+            )}
           </div>
         </section>
 
