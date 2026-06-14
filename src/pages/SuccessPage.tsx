@@ -93,18 +93,8 @@ export default function SuccessPage() {
             const urlEmail = params.get("email");
             const targetEmail = urlEmail || (user && user.email) || null;
             if (sessionId === "demo" && targetEmail) {
-              const purchasesRef = collection(db, "purchases");
-              const q = query(purchasesRef, where("email", "==", targetEmail), where("status", "==", "completed"));
-              getDocs(q).then(snapshot => {
-                if (snapshot.empty) {
-                  addDoc(purchasesRef, {
-                    email: targetEmail,
-                    status: "completed",
-                    createdAt: serverTimestamp()
-                  }).catch(console.error);
-                }
-              }).catch(console.error);
-
+              // SECURITY: In production, the purchase is created exclusively by the backend Webhook (e.g. Stripe).
+              // We trigger the simulation here to emulate that behavior for the demo.
               fetch(`${API_BASE}/api/webhook/simulate`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -189,19 +179,6 @@ export default function SuccessPage() {
     setIsDownloading(true);
 
     try {
-      // Sandbox implementation: Verify purchase on the frontend client SDK 
-      // instead of backend because of sandbox cross-project permissions.
-      const purchasesRef = collection(db, "purchases");
-      const q = query(purchasesRef, where("email", "==", user.email), where("status", "==", "completed"));
-      const snapshot = await getDocs(q);
-      
-      if (snapshot.empty) {
-        setIsDownloading(false);
-        downloadStartedRef.current = false;
-        alert("E-mail não autorizado ou compra não confirmada. Certifique-se de logar com seu e-mail de compra.");
-        return;
-      }
-
       const token = await user.getIdToken();
       const response = await fetch(`${API_BASE}/api/download`, {
         method: "POST",
@@ -219,7 +196,8 @@ export default function SuccessPage() {
       }
 
       if (data.downloadUrl) {
-        window.open(data.downloadUrl, "_blank");
+        const fullUrl = data.downloadUrl.startsWith('http') ? data.downloadUrl : `${API_BASE}${data.downloadUrl}`;
+        window.open(fullUrl, "_blank");
       }
     } catch (err: any) {
       console.error(err);
@@ -313,7 +291,14 @@ export default function SuccessPage() {
                 <div className="mt-6 p-5 rounded-2xl bg-white/[0.03] border border-white/10 text-center">
                   <p className="text-sm text-mist mb-4">Para baixar seu e-book, você precisa confirmar sua identidade.</p>
                   <button 
-                    onClick={loginWithGoogle}
+                    onClick={async () => {
+                      try {
+                        await loginWithGoogle();
+                      } catch(e) {
+                         console.error(e);
+                         alert("Falha na autenticação via Google. Tente novamente.");
+                      }
+                    }}
                     className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-white text-black font-semibold hover:bg-gray-200 transition-colors"
                   >
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="shrink-0" xmlns="http://www.w3.org/2000/svg">

@@ -17,17 +17,13 @@ export default function CheckoutPage() {
       if (currentUser?.email) {
         setEmail(currentUser.email);
         setStep("payment");
+      } else {
+        setEmail("");
+        setStep("email");
       }
     });
     return () => unsubscribe();
   }, []);
-
-  const handleEmailSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (email && email.includes("@")) {
-      setStep("payment");
-    }
-  };
 
   useEffect(() => {
     // Generate QR Code dynamically from the PIX payload
@@ -212,44 +208,24 @@ export default function CheckoutPage() {
                   01 · Identificação
                 </div>
                 <h3 className="font-display text-2xl lg:text-3xl font-light tracking-tight mb-6">
-                  Para onde enviamos seu acesso?
+                  Faça login para receber seu acesso
                 </h3>
                 
-                <form onSubmit={handleEmailSubmit} className="space-y-4">
-                  <div>
-                    <label className="block text-xs uppercase tracking-[0.25em] text-white/50 mb-2">
-                      Seu melhor e-mail
-                    </label>
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                      placeholder="seu@email.com"
-                      className="w-full bg-black/60 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-gold-400/50 transition-colors"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-gold-400 text-black font-semibold text-sm tracking-wide hover:bg-gold-300 transition-colors glow-pulse"
-                  >
-                    Continuar para pagamento
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M5 12h14M12 5l7 7-7 7" />
-                    </svg>
-                  </button>
-                </form>
+                <p className="text-sm text-mist mb-6">
+                  Crie sua conta ou faça login. Assim garantimos que seu ebook será entregue com segurança e ficará sempre disponível.
+                </p>
 
-                <div className="mt-8 flex items-center justify-center gap-4 text-[10px] uppercase tracking-[0.3em] text-white/30">
-                  <span className="flex-1 h-px bg-white/10" />
-                  <span>ou acesse rápido</span>
-                  <span className="flex-1 h-px bg-white/10" />
-                </div>
-                
                 <button
                   type="button"
-                  onClick={loginWithGoogle}
-                  className="mt-6 w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-white text-black font-semibold text-sm hover:bg-gray-200 transition-colors"
+                  onClick={async () => {
+                    try {
+                      await loginWithGoogle();
+                    } catch (e) {
+                      console.error(e);
+                      alert("Erro ao fazer login com Google.");
+                    }
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-white text-black font-semibold text-sm hover:bg-gray-200 transition-colors"
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -257,7 +233,7 @@ export default function CheckoutPage() {
                     <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
                     <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
                   </svg>
-                  Login com Google
+                  Continuar com Google
                 </button>
               </div>
             ) : (

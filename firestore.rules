@@ -7,8 +7,11 @@ service cloud.firestore {
     }
 
     match /purchases/{purchaseId} {
-      // Allow users to create and read their own purchases
-      allow create: if request.auth != null && request.resource.data.email == request.auth.token.email;
+      // SECURE: Only the backend webhook (Admin SDK) can write purchases.
+      // Users can NEVER create or modify their own purchase status.
+      allow create, update, delete: if false;
+      
+      // Users can only read their own securely confirmed purchases.
       allow read: if request.auth != null && resource.data.email == request.auth.token.email;
     }
   }

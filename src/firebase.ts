@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, browserPopupRedirectResolver } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -11,9 +11,16 @@ export const googleProvider = new GoogleAuthProvider();
 
 export const loginWithGoogle = async () => {
   try {
-    await signInWithPopup(auth, googleProvider);
-  } catch (error) {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    const result = await signInWithPopup(auth, provider, browserPopupRedirectResolver);
+    return result.user;
+  } catch (error: any) {
     console.error('Login error:', error);
+    if (error.code === 'auth/unauthorized-domain' || error.code === 'auth/internal-error') {
+      alert("Falha de segurança de domínio: Para o Login com Google funcionar, você precisa adicionar este domínio atual à lista de 'Domínios Autorizados' no console do Firebase Authentication.");
+    }
+    throw error;
   }
 };
 

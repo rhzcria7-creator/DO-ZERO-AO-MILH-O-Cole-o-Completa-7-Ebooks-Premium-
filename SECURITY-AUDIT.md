@@ -1,279 +1,59 @@
-# 🔒 Relatório de Auditoria de Segurança
+# Relatório de Auditoria de Segurança e Implementação
 
-**Data:** 2024
-**Versão:** 1.0
-**Status:** ✅ Corrigido
+## Introdução
+Este relatório descreve as análises de segurança e correções implementadas no sistema de vendas e distribuição do Ebook "Do Zero ao Milhão", de acordo com as diretrizes de prioridade máxima de segurança, focando em Autenticação, Autorização, Bancos de Dados e Proteção de APIs.
 
----
+## Fase 1 - Auditoria Completa e Análise de Risco
 
-## Resumo Executivo
+### Vulnerabilidade 1: CORS muito permissivo na API
+- **Gravidade:** Média.
+- **Impacto:** Qualquer site externo poderia fazer requisições para a API e tentar abusar de endpoints abertos se houvesse falhas no controle de sessão.
+- **Solução Recomendada:** Configurar origens permitidas no middleware de CORS do Express.
 
-Este documento apresenta os resultados da auditoria de segurança realizada no sistema "Do Zero ao Milhão". Foram identificados **5 vulnerabilidades** de segurança, das quais **5 foram corrigidas** e **0 permanecem abertas**.
+### Vulnerabilidade 2: Falta de restrição explícita contra injeção e sanitização
+- **Gravidade:** Baixa (Neste cenário específico).
+- **Impacto:** APIs que recebem dados do frontend podem processar dados mal-intencionados (ex: XSS refletido ou injeções no endpoint de Webhook).
+- **Solução Recomendada:** Implementar sanitização básica (ex: `express-mongo-sanitize` ou checagens explícitas de formato de email).
 
----
+### Vulnerabilidade 3: Políticas de Arquivos Restritos (Firebase Storage)
+- **Gravidade:** Baixa (O PDF não está armazenado no Firebase Storage atualmente, mas no servidor node local na pasta `private/`).
+- **Impacto:** Arquivo poderia ser acessado diretamente se estivesse no Storage sem regras rígidas.
+- **Solução Recomendada:** Garantir regras de Firebase Storage com "default deny" (`allow read, write: if false;`).
 
-## Vulnerabilidades Identificadas e Corrigidas
+## Fase 2 - Proteção do Ebook (Implementada)
+O arquivo PDF do ebook encontra-se na pasta `private/ebook.pdf` do servidor backend. Ele não é servido por rotas estáticas públicas.
+O acesso atual foi corrigido para exigir:
+1. Autenticação (Bearer Token Firebase ID).
+2. Validação efetiva da compra via REST no backend usando o token do usuário.
+3. Geração de `tempToken` de uso único que expira em 60 segundos.
+4. Download feito sob demanda a partir do disco, não expondo o caminho real.
 
-### 1. Path Traversal (LFI) - Alto Risco ✅
+## Fase 3 & 4 - Autenticação & Autorização (Implementada)
+As rotas de backend (Express) contam agora com verificações restritas:
+- O token fornecido no header `Authorization` é validado usando `adminAuth.verifyIdToken()` para extrair o e-mail verificado pelo Google.
+- A autorização de entrega compara esse e-mail com a base de pagamentos confirmados.
+- Se o usuário não comprou, o sistema bloqueia e emite `[AUDIT] Blocked unauthorized...`.
 
-**Descrição:** O endpoint de download permitia acesso a arquivos fora do diretório esperado através de manipulação do caminho do arquivo.
-
-**Localização:** `backend/src/routes/download.ts`
-
-**Impacto:** Um atacante poderia acessar arquivos do sistema, incluindo:
-- Arquivos de configuração (`.env`, `.git/config`)
-- Código fonte
-- Dados sensíveis
-- Outros arquivos privados
-
-**Correção Aplicada:**
-```typescript
-function normalizeAndValidatePath(filePath: string, allowedDir: string): string | null {
-  const normalized = path.normalize(filePath);
-  const allowedDirPath = path.resolve(allowedDir);
-  const resolvedPath = path.resolve(allowedDir, normalized);
-  
-  if (!resolvedPath.startsWith(allowedDirPath + path.sep)) {
-    return null;
-  }
-  
-  return resolvedPath;
+## Fase 5 - Firestore Security Rules (Implementada)
+A regra aplicada ao Firestore impõe restrições de granularidade fina:
+```javascript
+match /purchases/{purchaseId} {
+  // SOMENTE O BACKEND (ADMIN SDK) PODE CRIAR OU ATUALIZAR COMPRAS.
+  allow create, update, delete: if false;
+  // LEITURA PERMITIDA APENAS DO PROPRIETÁRIO DO DOCUMENTO.
+  allow read: if request.auth != null && resource.data.email == request.auth.token.email;
 }
 ```
 
-**Status:** ✅ Corrigido
+## Fase 6 - Firebase Storage Security Rules
+As regras do Firebase Storage foram blindadas contra acessos anônimos para evitar qualquer hospedagem futura de arquivos privados sem proteção. 
+Somente usuários autenticados teriam permissão condicional, mas a principal linha de defesa é o "Deny All" para o bucket público, servindo ebooks apenas pela rede do Node.js.
 
----
+## Fase 7, 8, 9, 10, 11 - APIs e Mitigações Finais
 
-### 2. Falta de IP Blocking Automático - Médio Risco ✅
+### Monitoramento e Logs de Abuso
+- Um controle de Rate Limiting (100 requisições a cada 15 min) foi assegurado pela biblioteca `express-rate-limit`.
+- Logs extensivos de Auditoria (`console.warn`, `console.log`) foram inseridos contendo os e-mails e a origem das requisições para todos os bloqueios e acessos cedidos.
 
-**Descrição:** Não havia mecanismo para bloquear IPs após múltiplas tentativas de acesso inválido.
-
-**Localização:** `backend/src/routes/download.ts`
-
-**Impacto:** Um atacante poderia fazer força bruta em tokens de download sem restrições.
-
-**Correção Aplicada:**
-```typescript
-const blockedIPs = new Map<string, { until: number; attempts: number }>();
-const BLOCK_DURATION = 60 * 60 * 1000; // 1 hora
-const MAX_FAILED_ATTEMPTS = 3;
-
-function checkIPBlocked(ip: string): boolean { /* ... */ }
-function blockIP(ip: string): void { /* ... */ }
-
-// Uso: Verificar no início de cada request
-if (checkIPBlocked(ip)) {
-  return res.status(403).json({ error: "IP temporariamente bloqueado" });
-}
-```
-
-**Status:** ✅ Corrigido
-
----
-
-### 3. Headers de Segurança Incompletos - Baixo Risco ✅
-
-**Descrição:** Faltavam alguns headers de segurança recomendados.
-
-**Localização:** `backend/src/server.ts`
-
-**Impacto:** Potencial exposição a ataques de clickjacking e fingerprinting.
-
-**Correção Aplicada:**
-```typescript
-app.use(helmet({
-  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
-  noSniff: true,
-  permittedCrossDomainPolicies: { permittedPolicies: "none" },
-  hidePoweredBy: true,
-  xssFilter: true,
-}));
-
-// Headers extras
-res.setHeader("X-Frame-Options", "DENY");
-res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
-res.removeHeader("X-Powered-By");
-res.removeHeader("Server");
-```
-
-**Status:** ✅ Corrigido
-
----
-
-### 4. Enumeração de Usuários na API - Baixo Risco ✅
-
-**Descrição:** A API de compra retornava informações diferentes para sessões válidas vs inválidas.
-
-**Localização:** `backend/src/routes/purchase.ts`
-
-**Impacto:** Um atacante poderia descobrir session IDs válidos testando diferentes valores.
-
-**Correção Aplicada:**
-```typescript
-// Antes: Retornava erro diferente se não encontrava
-// Depois: Sempre retorna { verified: false } mesmo se não encontrar
-if (!purchase) {
-  return res.json({ verified: false }); // Evita enumeração
-}
-```
-
-**Status:** ✅ Corrigido
-
----
-
-### 5. Validação de Input Insuficiente - Baixo Risco ✅
-
-**Descrição:** Alguns campos não tinham validação suficiente.
-
-**Localização:** Múltiplos arquivos
-
-**Correção Aplicada:**
-- Honeypot fields implementados
-- Validação Zod em todos os endpoints
-- Sanitização XSS em todos os inputs
-- Rate limiting por endpoint
-
-**Status:** ✅ Corrigido
-
----
-
-## Medidas de Segurança Implementadas
-
-### Camadas de Proteção
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         FRONTEND                            │
-│  • Content Security Policy (CSP)                           │
-│  • XSS Sanitization                                         │
-│  • Input Validation (Zod)                                  │
-│  • Honeypot Anti-Bot                                        │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                          BACKEND                            │
-│  • Helmet.js (Security Headers)                             │
-│  • HSTS (HTTP Strict Transport Security)                   │
-│  • Rate Limiting (100 req/15min global)                     │
-│  • CSRF Protection                                          │
-│  • SQL/NoSQL Injection Prevention                           │
-│  • IP Blocking                                              │
-│  • HMAC Token Verification                                  │
-│  • Path Traversal Prevention                                 │
-│  • Session Management                                       │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                       DATABASE                               │
-│  • Parameterized Queries (Drizzle ORM)                     │
-│  • Unique Constraints                                       │
-│  • Foreign Keys                                             │
-│  • Audit Logs                                               │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Endpoints Protegidos
-
-| Endpoint | Método | Proteção |
-|----------|--------|----------|
-| `/api/download/:token` | GET | HMAC + IP Block + Rate Limit + Path Validation |
-| `/api/purchase/:id` | GET | Anti-Enumeração + Rate Limit |
-| `/newsletter/subscribe` | POST | Honeypot + Validation + Rate Limit |
-| `/checkout/session` | POST | Rate Limit + Validation |
-| `/admin/*` | ALL | Session Auth + Rate Limit |
-
----
-
-## Recomendações de Melhoria Contínua
-
-### Curto Prazo (1-2 semanas)
-- [ ] Implementar Redis para sessões admin (persistência)
-- [ ] Adicionar CAPTCHA nos formulários públicos
-- [ ] Implementar logging de segurança centralizado
-
-### Médio Prazo (1-2 meses)
-- [ ] Autenticação multifator (MFA) para admin
-- [ ] Sistema de alertas para atividades suspeitas
-- [ ] Backups automáticos do banco de dados
-
-### Longo Prazo (3-6 meses)
-- [ ] WaterMark em PDFs
-- [ ] Device fingerprinting
-- [ ] Análise de comportamento para detecção de fraude
-
----
-
-## Checklist de Segurança para Deploy
-
-- [x] NODE_ENV=production
-- [x] HTTPS forçado
-- [x] ALLOWED_ORIGINS configurado
-- [x] COOKIE_SECRET com 64+ caracteres
-- [x] DOWNLOAD_SECRET com 64+ caracteres
-- [x] DATABASE_URL configurado
-- [x] Rate limiting ativo
-- [x] Logs configurados
-- [x] Stripe webhook configurado
-- [x] Email service configurado
-- [x] Admin credentials configurados
-- [x] Headers de segurança configurados
-
----
-
-## Testes Realizados
-
-| Teste | Resultado |
-|-------|-----------|
-| SQL Injection | ✅ Passou |
-| NoSQL Injection | ✅ Passou |
-| XSS | ✅ Passou |
-| Path Traversal | ✅ Passou |
-| Brute Force | ✅ Passou |
-| CSRF | ✅ Passou |
-| Clickjacking | ✅ Passou |
-| Session Hijacking | ✅ Passou |
-| SSRF | ✅ Passou |
-| Open Redirect | ✅ Passou |
-| IDOR | ✅ Passou |
-| Abuso de APIs | ✅ Passou |
-
----
-
-## Melhorias Recentes (v1.1)
-
-### Error Handler Aprimorado
-- Classe `AppError` com códigos de status
-- Helpers de erro pré-definidos
-- Request ID para rastreamento
-- Logs detalhados com contexto
-
-### Health Check Aprimorado
-- `/health` - Status completo com métricas
-- `/health/ready` - Liveness probe
-- `/health/live` - Readiness probe
-- Verificação de banco de dados
-- Métricas de memória e requests
-
-### Database Schema Aprimorado
-- `updated_at` com auto-update trigger
-- Índices parciais para registros ativos
-- `token_hash` para armazenamento seguro
-- Tabela `admin_sessions` para sessões persistentes
-- Tabela `ip_blocks` para IPs bloqueados
-- Tabela `daily_metrics` para dashboards
-- Função `cleanup_old_logs()` para limpeza automática
-- Mais constraints e validações
-
-### Novas Proteções de Segurança
-- Anti-Abuse System (bloqueia após 20 tentativas/minuto)
-- SSRF Protection (bloqueia localhost, cloud metadata, private IPs)
-- Open Redirect Protection (valida returnTo parameter)
-- IP Blocking automático no admin
-- Detecção de padrões suspeitos
-
----
-
-**Documento gerado automaticamente pelo sistema de auditoria de segurança.**
+### Cabeçalhos de Segurança 
+A biblioteca `helmet` foi reconfigurada cuidadosamente. Por tratar-se de um sistema rodando em um Iframe dentro do AI Studio, as configurações de CSP (Content-Security-Policy) e Cross-Origin-Resource-Policy exigem atenção para não bloquear a renderização dos alunos, mas habilitamos recursos avançados que protegem a aplicação em ambientes de produção real, garantindo Headers como `X-Content-Type-Options: nosniff`, `Strict-Transport-Security`, `Permissions-Policy`.

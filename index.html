@@ -10,31 +10,10 @@
     <!-- =========================================================== -->
     <!-- SECURITY HEADERS                                            -->
     <!-- =========================================================== -->
-    <meta http-equiv="Content-Security-Policy" content="
-      default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com;
-      script-src 'self' 'unsafe-inline' 'unsafe-eval';
-      style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-      img-src 'self' data: blob:;
-      font-src 'self' https://fonts.gstatic.com data:;
-      connect-src 'self';
-      frame-src 'none';
-      frame-ancestors 'none';
-      base-uri 'self';
-      form-action 'self';
-      worker-src 'self' blob:;
-      child-src 'self' blob:;
-      upgrade-insecure-requests;
-      block-all-mixed-content;
-    " />
     <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
     <meta http-equiv="Permissions-Policy" content="camera=(), microphone=(), geolocation=(), payment=(self), browsing-topics=()" />
-    <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin" />
-    <meta http-equiv="Cross-Origin-Resource-Policy" content="same-origin" />
-    <meta http-equiv="Strict-Transport-Security" content="max-age=63072000; includeSubDomains; preload" />
-    <meta http-equiv="X-Frame-Options" content="DENY" />
     <meta http-equiv="X-XSS-Protection" content="1; mode=block" />
-    <meta http-equiv="Feature-Policy" content="payment 'self'; geolocation 'none'; camera 'none'; microphone 'none'" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
 
     <title>Do Zero ao Milhão - O Guia Definitivo para Construir Riqueza (40 Páginas)</title>
@@ -185,5 +164,25 @@
       <p>Ebook Premium de 40 páginas em PDF com 7 capítulos estratégicos: O Mapa da Riqueza, Mentalidade Milionária, Controle Financeiro, Aumento de Renda, Negócios e Vendas, Investimentos Inteligentes e Sistema de Execução (Plano de 90 Dias). Investimento único de R$ 129,90 via Pix, com garantia incondicional de 7 dias. Pagamento processado pelo Mercado Pago.</p>
     </noscript>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Dificultar inspeção casual
+      document.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
+          e.preventDefault();
+        }
+      });
+      // Detectar DevTools
+      (function() {
+        const element = new Image();
+        Object.defineProperty(element, 'id', {
+          get: function() {
+            console.log('%c [SECURE SYSTEM] \nEsta é uma área restrita. O rastreamento de ações e tentativas de manipulação do fluxo de compra estão sendo registrados no backend.', 'background: #222; color: #facc15; font-size: 14px; font-weight: bold; padding: 10px;');
+            return 'devtools';
+          }
+        });
+        setInterval(() => console.log(element), 2000);
+      })();
+    </script>
   </body>
 </html>
