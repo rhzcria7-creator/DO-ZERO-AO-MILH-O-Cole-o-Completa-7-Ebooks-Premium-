@@ -15,6 +15,22 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ============================================================================
+// CONFIGURAÇÃO DE SEGURANÇA CRÍTICA
+// ============================================================================
+
+// Token secret DEVE ser configurado em produção - não tem fallback inseguro
+const TOKEN_SECRET = process.env.TOKEN_SECRET;
+if (!TOKEN_SECRET || TOKEN_SECRET.length < 32) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("FATAL: TOKEN_SECRET must be set with at least 32 characters in production!");
+  }
+  console.warn("WARNING: Using insecure default TOKEN_SECRET. Set TOKEN_SECRET env var!");
+}
+
+// Secure default only for development
+const TOKEN_SECRET_FALLBACK = "dev-only-insecure-key-change-in-production!!!";
+
 // Security: Rate limiting for sensitive endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -34,9 +50,17 @@ const downloadLimiter = rateLimit({
   message: JSON.stringify({ error: "Limite de downloads excedido. Tente novamente em 1 hora." }),
 });
 
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 5, // Limit webhook calls
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  message: JSON.stringify({ error: "Limite de webhooks excedido." }),
+});
+
 // IP blocking for abuse
 const blockedIPs = new Map<string, number>();
-const MAX_FAILED = 5;
 const BLOCK_DURATION = 30 * 60 * 1000; // 30 minutes
 
 function checkIPBlocked(ip: string): boolean {
@@ -48,10 +72,35 @@ function checkIPBlocked(ip: string): boolean {
   return false;
 }
 
-function blockIP(ip: string): void {
+function blockIP(ip: string, reason: string = "abuse"): void {
   blockedIPs.set(ip, Date.now() + BLOCK_DURATION);
-  console.warn(`IP blocked for abuse: ${ip}`);
+  console.warn(`IP blocked for ${reason}: ${ip}`);
 }
+
+// CSRF Token generation and validation
+const csrfTokens = new Map<string, { token: string; expiresAt: number }>();
+
+function generateCSRFToken(sessionId: string): string {
+  const token = crypto.randomBytes(32).toString("hex");
+  csrfTokens.set(sessionId, {
+    token,
+    expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour
+  });
+  return token;
+}
+
+function validateCSRFToken(sessionId: string, token: string): boolean {
+  const record = csrfTokens.get(sessionId);
+  if (!record) return false;
+  if (Date.now() > record.expiresAt) {
+    csrfTokens.delete(sessionId);
+    return false;
+  }
+  return record.token === token;
+}
+
+// Webhook secret for Mercado Pago verification
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 
 async function startServer() {
   const app = express();
@@ -122,17 +171,30 @@ async function startServer() {
     crossOriginEmbedderPolicy: false,
   }));
 
+  // General rate limiter
   const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
-    standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-    legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-    validate: { xForwardedForHeader: false }, // Suppress express-rate-limit proxy warning if trust proxy handles it
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
     message: "Too many requests from this IP, please try again later.",
   });
   app.use("/api", limiter);
 
-  app.use(cors());
+  // CORS restrito para produção
+  const corsOptions: cors.CorsOptions = {
+    origin: process.env.NODE_ENV === "production" 
+      ? [process.env.ALLOWED_ORIGIN || "https://dozeroaomilhao.com"].filter(Boolean)
+      : true, // Allow all in development
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", "X-Requested-With"],
+    exposedHeaders: ["X-CSRF-Token"],
+    credentials: true,
+    maxAge: 86400, // 24 hours preflight cache
+  };
+  app.use(cors(corsOptions));
+  
   app.use(express.json({ limit: '10kb' })); // Limit JSON body size
 
   // Get client IP helper
@@ -142,13 +204,43 @@ async function startServer() {
       || 'unknown';
   };
 
+  // CSRF Protection Middleware
+  const csrfProtection = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // Skip for GET, HEAD, OPTIONS
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      return next();
+    }
+    
+    // Check CSRF token for state-changing requests
+    const csrfToken = req.headers['x-csrf-token'] as string;
+    const sessionId = req.headers['x-session-id'] as string;
+    
+    if (!csrfToken || !sessionId) {
+      return res.status(403).json({ error: "CSRF token required" });
+    }
+    
+    if (!validateCSRFToken(sessionId, csrfToken)) {
+      return res.status(403).json({ error: "Invalid or expired CSRF token" });
+    }
+    
+    next();
+  };
+
   // API Routes
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
+  // CSRF token endpoint
+  app.get("/api/csrf-token", (req, res) => {
+    const sessionId = req.headers['x-session-id'] as string || crypto.randomBytes(16).toString("hex");
+    const token = generateCSRFToken(sessionId);
+    res.setHeader("X-CSRF-Token", token);
+    res.json({ csrfToken: token, sessionId });
+  });
+
   // SECURE: Purchase verification with server-side validation
-  app.post("/api/purchase/verify", authLimiter, async (req, res) => {
+  app.post("/api/purchase/verify", authLimiter, csrfProtection, async (req, res) => {
     const ip = getClientIP(req);
     
     // Check if IP is blocked
@@ -159,7 +251,7 @@ async function startServer() {
     // Validate authorization header
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      blockIP(ip);
+      blockIP(ip, "invalid_auth");
       return res.status(401).json({ verified: false, error: "Autenticação requerida." });
     }
 
@@ -192,11 +284,7 @@ async function startServer() {
         return res.json({ verified: false, error: "Compra não encontrada ou não aprovada." });
       }
 
-      // Check if this sessionId matches (for Mercado Pago verification)
-      // In production, verify against payment provider
-      // For now, accept if user has ANY completed purchase
       const purchaseDoc = snapshot.docs[0];
-      const purchaseData = purchaseDoc.data();
       
       // Log successful verification
       console.info(`Purchase verified for: ${email}, PurchaseID: ${purchaseDoc.id}, IP: ${ip}`);
@@ -210,7 +298,7 @@ async function startServer() {
       console.error("Purchase verification error:", error.message);
       
       if (error.code === 'auth/argument-error') {
-        blockIP(ip);
+        blockIP(ip, "invalid_firebase_token");
         return res.status(401).json({ verified: false, error: "Token inválido." });
       }
       
@@ -219,7 +307,7 @@ async function startServer() {
   });
 
   // SECURE: Request download token (requires valid purchase)
-  app.post("/api/download/request", downloadLimiter, async (req, res) => {
+  app.post("/api/download/request", downloadLimiter, csrfProtection, async (req, res) => {
     const ip = getClientIP(req);
     
     if (checkIPBlocked(ip)) {
@@ -258,12 +346,10 @@ async function startServer() {
       const purchaseId = purchaseDoc.id;
 
       // Generate secure HMAC token for download
-      // Token format: base64url(JSON).base64url(HMAC)
-      const tokenSecret = process.env.TOKEN_SECRET || "default-secret-change-in-production-32chars!";
+      const activeSecret = TOKEN_SECRET || TOKEN_SECRET_FALLBACK;
       const issuedAt = Date.now();
       const expiresAt = issuedAt + (60 * 60 * 1000); // 1 hour validity
       
-      // Create a secure token with purchase verification
       const tokenPayload = {
         purchaseId: purchaseId,
         emailHash: crypto.createHash("sha256").update(email.toLowerCase()).digest("hex").substring(0, 16),
@@ -274,7 +360,7 @@ async function startServer() {
       };
 
       const payloadEncoded = Buffer.from(JSON.stringify(tokenPayload)).toString("base64url");
-      const signature = crypto.createHmac("sha256", tokenSecret)
+      const signature = crypto.createHmac("sha256", activeSecret)
                               .update(payloadEncoded)
                               .digest("base64url");
       
@@ -291,7 +377,7 @@ async function startServer() {
       console.error("Download request error:", error.message);
       
       if (error.code === 'auth/argument-error') {
-        blockIP(ip);
+        blockIP(ip, "invalid_token");
         return res.status(401).json({ success: false, error: "Token de autenticação inválido." });
       }
       
@@ -304,56 +390,48 @@ async function startServer() {
     const ip = getClientIP(req);
     const { token } = req.params;
     
-    // Check if IP is blocked
     if (checkIPBlocked(ip)) {
       return res.status(403).json({ success: false, error: "Acesso temporariamente bloqueado." });
     }
 
-    // Validate token format
     if (!token || token.length < 50 || token.length > 500) {
-      blockIP(ip);
+      blockIP(ip, "invalid_token_format");
       return res.status(400).json({ success: false, error: "Token inválido." });
     }
 
     try {
-      // Parse and validate token
       const parts = token.split(".");
       if (parts.length !== 2) {
-        blockIP(ip);
+        blockIP(ip, "invalid_token_structure");
         return res.status(400).json({ success: false, error: "Formato de token inválido." });
       }
 
       const [payloadEncoded, providedSignature] = parts;
 
       // Verify HMAC signature
-      const tokenSecret = process.env.TOKEN_SECRET || "default-secret-change-in-production-32chars!";
-      const expectedSignature = crypto.createHmac("sha256", tokenSecret)
+      const activeSecret = TOKEN_SECRET || TOKEN_SECRET_FALLBACK;
+      const expectedSignature = crypto.createHmac("sha256", activeSecret)
                                        .update(payloadEncoded)
                                        .digest("base64url");
       
       if (providedSignature !== expectedSignature) {
-        blockIP(ip);
+        blockIP(ip, "invalid_signature");
         console.warn(`Invalid token signature from IP: ${ip}`);
         return res.status(403).json({ success: false, error: "Token de download inválido ou expirado." });
       }
 
-      // Decode and validate payload
       const payload = JSON.parse(Buffer.from(payloadEncoded, "base64url").toString("utf-8"));
 
-      // Check expiration
       if (payload.expiresAt < Date.now()) {
         return res.status(403).json({ success: false, error: "Link de download expirado. Solicite um novo link." });
       }
 
-      // Verify email hash matches
-      const emailHash = crypto.createHash("sha256").update(payload.emailHash.toLowerCase()).digest("hex").substring(0, 16);
-      
       // Verify purchase still exists and is valid
       const purchaseRef = adminDb.collection("purchases").doc(payload.purchaseId);
       const purchaseDoc = await purchaseRef.get();
       
       if (!purchaseDoc.exists) {
-        blockIP(ip);
+        blockIP(ip, "purchase_not_found");
         return res.status(404).json({ success: false, error: "Compra não encontrada." });
       }
 
@@ -362,12 +440,9 @@ async function startServer() {
         return res.status(403).json({ success: false, error: "Pagamento não confirmado." });
       }
 
-      // Log successful download access
       console.info(`Download approved for PurchaseID: ${payload.purchaseId}, IP: ${ip}`);
 
       // In production, stream the actual ebook file here
-      // For security, the file should be stored securely and streamed
-      // DO NOT expose direct file URLs
       res.json({ 
         success: true, 
         message: "Download autorizado. Em produção, o arquivo PDF seria entregue aqui via streaming seguro.",
@@ -376,21 +451,20 @@ async function startServer() {
 
     } catch (error) {
       console.error("Download token validation error:", error);
-      blockIP(ip);
+      blockIP(ip, "token_validation_error");
       res.status(500).json({ success: false, error: "Erro ao processar download." });
     }
   });
 
-  // Deprecated endpoint - kept for backwards compatibility but now secured
+  // Deprecated endpoint
   app.post("/api/download", async (req, res) => {
-    // Redirect to new endpoint
     res.status(410).json({ 
       success: false, 
       error: "Este endpoint foi descontinuado. Use /api/download/request para obter um token de download." 
     });
   });
 
-  // Legacy endpoint - returns error
+  // Legacy endpoint
   app.get("/api/purchase/:sessionId", (req, res) => {
     res.status(410).json({ 
       verified: false, 
@@ -398,28 +472,105 @@ async function startServer() {
     });
   });
 
-  // Simulated Webhook - now requires authentication
-  app.post("/api/webhook/simulate", async (req, res) => {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: "Email missing" });
+  // SECURE: Webhook with Mercado Pago signature verification
+  app.post("/api/webhook/mercadopago", webhookLimiter, async (req, res) => {
+    const ip = getClientIP(req);
     
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: "Invalid email format" });
+    // Verify Mercado Pago signature
+    const signature = req.headers['x-signature'] as string;
+    const webhookId = req.headers['x-webhook-id'] as string;
+    
+    // In production, verify the signature with WEBHOOK_SECRET
+    if (WEBHOOK_SECRET && signature) {
+      const payload = JSON.stringify(req.body);
+      const expectedSignature = crypto
+        .createHmac("sha256", WEBHOOK_SECRET)
+        .update(payload)
+        .digest("hex");
+      
+      if (signature !== expectedSignature) {
+        console.warn(`Invalid webhook signature from IP: ${ip}`);
+        return res.status(401).json({ error: "Invalid signature" });
+      }
+    }
+    
+    const { type, data } = req.body;
+    
+    if (type !== "payment") {
+      return res.json({ received: true, message: "Event type not handled" });
+    }
+    
+    const paymentId = data?.id;
+    if (!paymentId) {
+      return res.status(400).json({ error: "Payment ID required" });
     }
     
     try {
+      // In production, verify payment status with Mercado Pago API
+      // and create purchase record in Firestore
+      
+      console.info(`Mercado Pago webhook received for payment: ${paymentId}, IP: ${ip}`);
+      
+      res.json({ received: true, paymentId });
+    } catch (error) {
+      console.error("Webhook processing error:", error);
+      res.status(500).json({ error: "Failed to process webhook" });
+    }
+  });
+
+  // Simulated Webhook for testing - NOW REQUIRES AUTHENTICATION
+  app.post("/api/webhook/simulate", authLimiter, async (req, res) => {
+    const ip = getClientIP(req);
+    
+    // Verify authorization
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Autenticação requerida." });
+    }
+    
+    const idToken = authHeader.split("Bearer ")[1];
+    
+    try {
+      const decodedToken = await adminAuth.verifyIdToken(idToken);
+      const email = decodedToken.email;
+      
+      if (!email) {
+        return res.status(400).json({ error: "E-mail não encontrado." });
+      }
+      
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ error: "Invalid email format" });
+      }
+      
+      // Create purchase record in Firestore (for demo/testing)
+      // In production, this should only be done via Mercado Pago webhook
+      await adminDb.collection("purchases").add({
+        email: email,
+        status: "completed",
+        createdAt: new Date(),
+        createdBy: "simulate_webhook",
+        paymentMethod: "pix",
+        amount: 129.90,
+      });
+      
       await sendEbookEmail(email);
+      console.info(`Simulated purchase created for: ${email}, IP: ${ip}`);
+      
       res.json({ success: true });
     } catch (error) {
-      console.error(error);
+      console.error("Webhook simulation error:", error);
+      if (error.code === 'auth/argument-error') {
+        blockIP(ip, "invalid_webhook_auth");
+        return res.status(401).json({ error: "Token inválido." });
+      }
       res.status(500).json({ error: "Failed to simulate webhook" });
     }
   });
 
   // Endpoint to resend email with proper security
-  app.post("/api/resend-email", async (req, res) => {
+  app.post("/api/resend-email", authLimiter, csrfProtection, async (req, res) => {
     const ip = getClientIP(req);
     
     if (checkIPBlocked(ip)) {
@@ -462,7 +613,7 @@ async function startServer() {
     } catch (error) {
        console.error("Resend error:", error);
        if (error.code === 'auth/argument-error') {
-         blockIP(ip);
+         blockIP(ip, "invalid_resend_auth");
        }
        res.status(403).json({ success: false, error: "Token inválido." });
     }

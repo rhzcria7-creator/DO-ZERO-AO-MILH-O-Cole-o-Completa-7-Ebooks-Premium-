@@ -1,7 +1,0 @@
-node_modules
-*.log
-.git
-*.local
-.vercel
-README.md
-SECURITY.md
